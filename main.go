@@ -1,53 +1,48 @@
 package main
 
 import (
-	"flag"
-	"log"
-	"time"
+	"flag"                // Package for command-line flag parsing
+	"log"                 // Package for logging
+	"sample/rate_limiter" // Importing the custom rate limiter package
 
-	"github.com/fatih/color"
-	"github.com/gin-gonic/gin"
-	"go.uber.org/ratelimit"
+	"github.com/gin-gonic/gin" // Gin web framework package
 )
 
-var (
-	limit ratelimit.Limiter
-	rps   = flag.Int("rps", 100, "request per second")
-)
+var rps = flag.Int("rps", 100, "request per second") // Defines a command-line flag for rate per second (RPS)
 
 func init() {
-	log.SetFlags(0)
-	log.SetPrefix("[GIN] ")
-	log.SetOutput(gin.DefaultWriter)
-}
-
-func leakBucket() gin.HandlerFunc {
-	prev := time.Now()
-	return func(ctx *gin.Context) {
-		now := limit.Take()
-		log.Print(color.CyanString("%v", now.Sub(prev)))
-		prev = now
-
-		// Call the next handler
-		ctx.Next()
-	}
+	// Initialize log settings
+	log.SetFlags(0)                  // Disable time, source file, and line number in logs
+	log.SetPrefix("[GIN] ")          // Set a log prefix for all log output
+	log.SetOutput(gin.DefaultWriter) // Set the log output to Gin's default writer (console by default)
 }
 
 func ginRun(rps int) {
-	limit = ratelimit.New(rps)
+	// Initialize rate limiter with the specified RPS value
+	rate_limiter.InitRateLimiter(rps)
 
+	// Create a new Gin router
 	app := gin.Default()
-	app.Use(leakBucket())
 
+	// Apply the rate limiter middleware to the Gin app
+	app.Use(rate_limiter.LeakBucket())
+
+	// Define a GET route at /rate to respond with a simple test message
 	app.GET("/rate", func(ctx *gin.Context) {
-		ctx.JSON(200, "rate limiting test")
+		ctx.JSON(200, "rate limiting test") // Send a JSON response with HTTP status 200
 	})
 
-	log.Printf(color.CyanString("Current Rate Limit: %v requests/s", rps))
+	// Log the current rate limit setting
+	log.Printf("Current Rate Limit: %v requests/s", rps)
+
+	// Run the Gin app on port 8081
 	app.Run(":8081")
 }
 
 func main() {
+	// Parse command-line flags
 	flag.Parse()
+
+	// Start the Gin app with the parsed RPS value
 	ginRun(*rps)
 }
