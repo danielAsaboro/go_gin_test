@@ -5,12 +5,15 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"strconv"
 	"time"
 
 	"github.com/fatih/color"
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
@@ -36,9 +39,28 @@ func init() {
 func leakBucket() gin.HandlerFunc {
 	prev := time.Now()
 	return func(ctx *gin.Context) {
+		// Extract trace context and baggage from the incoming request
+		propagator := otel.GetTextMapPropagator()
+		ctxWithPropagation := propagator.Extract(ctx.Request.Context(), propagation.HeaderCarrier(ctx.Request.Header))
+
+		// Start a new span
+		tracer := otel.Tracer("rate-limiter-middleware")
+		ctxWithSpan, span := tracer.Start(ctxWithPropagation, "rate-limit")
+		defer span.End()
+
+		// Set the trace context and baggage in the Gin context
+		ctx.Request = ctx.Request.WithContext(ctxWithSpan)
+
 		now := limit.Take()
 		log.Print(color.CyanString("%v", now.Sub(prev)))
 		prev = now
+
+		// Add some baggage
+		b, _ := baggage.Parse("rate_limit=" + strconv.Itoa(*rps))
+		ctx.Request = ctx.Request.WithContext(baggage.ContextWithBaggage(ctx.Request.Context(), b))
+
+		// Call the next handler
+		ctx.Next()
 	}
 }
 
@@ -50,6 +72,24 @@ func ginRun(rps int) {
 	app.Use(leakBucket())
 
 	app.GET("/rate", func(ctx *gin.Context) {
+		// Extract the propagated context
+		reqCtx := ctx.Request.Context()
+
+		tracer := otel.Tracer("rate-limiter-service")
+		_, span := tracer.Start(reqCtx, "rate-limiting")
+		defer span.End()
+
+		// Optionally, add some attributes to the span
+		span.SetAttributes(attribute.String("method", ctx.Request.Method))
+		span.SetAttributes(attribute.String("path", ctx.FullPath()))
+
+		// Extract and log the baggage
+		b := baggage.FromContext(reqCtx)
+		rateLimit := b.Member("rate_limit")
+		if rateLimit.Key() != "" {
+			log.Printf("Rate limit from baggage: %s", rateLimit.Value())
+		}
+
 		ctx.JSON(200, "rate limiting test")
 	})
 
@@ -87,7 +127,8 @@ func setupOTelSDK(ctx context.Context) (shutdown func(context.Context) error, er
 	otel.SetTextMapPropagator(prop)
 
 	// Set up trace provider
-	traceExporter, err := otlptracegrpc.New(context.Background(),
+	traceExporter, err := otlptracegrpc.New(
+		ctx,
 		otlptracegrpc.WithEndpoint("localhost:4317"),
 		otlptracegrpc.WithInsecure(),
 	)
