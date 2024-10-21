@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"log"
 
@@ -35,18 +34,6 @@ func ginRun(rps int) {
 
 func main() {
 	flag.Parse()
-
-	// Set up OTel
-	ctx := context.Background()
-	shutdown, err := setupOTelSDK(ctx)
-	if err != nil {
-		log.Fatalf("Error setting up OTel SDK: %v", err)
-	}
-	defer func() {
-		if err := shutdown(ctx); err != nil {
-			log.Fatalf("Error shutting down OTel SDK: %v", err)
-		}
-	}()
 
 	ginRun(*rps)
 }
